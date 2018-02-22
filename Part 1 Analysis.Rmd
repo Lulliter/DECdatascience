@@ -81,7 +81,7 @@ As I am interested in the relationship between a "Fragile and Conflic Status" an
 ```{r merge FCS ,  results='hide', warning=FALSE,  message = FALSE}
 # add FCS,csv in a way that is reproducible
 # FCS <- read.csv("FCS.csv", header = TRUE, sep = ",") 
-myfile <- "https://raw.githubusercontent.com/Lulliter/DECDD/master/FCS.csv"
+myfile <- "https://raw.githubusercontent.com/Lulliter/DECdatascience/master/FCS.csv"
 FCS <- read_csv(myfile)
 
 # Merge
