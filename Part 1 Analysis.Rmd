@@ -1,0 +1,283 @@
+---
+title: "Part 1 Analysis Script"
+author: "Luisa M Mimmi"
+date: "2/20/2018"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+  word_document:
+    toc: yes
+---
+
+#	Introduction
+I will explore the indicator **_Life expectancy at birth_** obtained from *WDI* to understand how it changed over time (1960 - 2015) and across countries. 
+I also will do some very quick exploration of other indicators that I expect to be highly correlated with life expectancy: namely **GDP** and the status of **Fragile and conflict affected situations** (FCS). 
+
++ In order to flag the individual countries that are classified as FCS, I used the World Bank list of economies (as of June 2017) found [here](http://databank.worldbank.org/data/download/site-content/CLASS.xls)
+
+
+#	Pull data from an API
+```{r packages , results='hide',  message = FALSE}
+library(WDI)
+library(wbstats)
+library(ggplot2) 
+library(dplyr)
+library(stats)
+library(tidyr)
+library(stringr)
+library(gridExtra)
+library(readr)  # for read_csv
+library(knitr)  # for kable
+```
+
+### Find out IDs for interesting indicators using `WDIsearch` and `wbsearch`
+```{r search,  results='hide'}
+WDIsearch("life expectancy at birth.*total")
+WDIsearch("life expectancy at birth.*male")
+wbsearch("gdp.*capita.*US\\$") 
+```
+
+### Download those data
+```{r data,  results='hide', warning=FALSE,  message = FALSE}
+# WDI life expectancy indicators 
+WDIlifeexp <- WDI(country = "all", indicator = c("SP.DYN.LE00.IN","SP.DYN.LE00.MA.IN","SP.DYN.LE00.FE.IN", "SI.SPR.PCAP"), start=1960, end=2016, extra= TRUE)
+names(WDIlifeexp)
+
+# wb GDP  per capita (wb does not have arg extra)
+wbGDP <- wb(country = "all", indicator = c("NY.GDP.PCAP.KD","NY.GDP.PCAP.CD"))
+names(wbGDP)
+```
+
+
+
+#	Basic data wrangling tasks
+### Check comparability of *life expectancy* and *gdp* data 
+
+From a quick check, I see that the two tables have different number of countries and that changes over different years. I will give priority to the data of life expectancy which is my outcome of interest. 
+```{r check,  results='hide', warning=FALSE,  message = FALSE}
+n_distinct(wbGDP$iso2c)      # 255 obs = countries + aggreagates
+n_distinct(WDIlifeexp$iso2c) # 264 obs = countries + aggreagates
+
+```
+### Merge gdp and life exp then remove "aggregates"
+The dataframe `wbGDP` has the 2 GDP indicators in the same column and I want them in 2 columns for consistency 
+```{r merge GDP,  results='hide', warning=FALSE,  message = FALSE}
+# tidy GDP spread 
+wbGDP$date = as.numeric(wbGDP$date)
+wbGDP_spread <- select (wbGDP, -indicator ) %>% spread(indicatorID, value, fill = NA, convert = TRUE, drop = TRUE,  sep = NULL) 
+
+# rename GDP
+names(wbGDP_spread)[5]<-"GdpPerCapCurrent"
+names(wbGDP_spread)[6]<-"GdpPerCap2010"
+
+# merge life and GDP (spread)
+lifemerged <-  left_join(WDIlifeexp, wbGDP_spread, by=c("year"= "date", "iso2c"="iso2c")) # 15,048
+```
+
+
+### Additional merge with table to flag *FCS* individual countries 
+As I am interested in the relationship between a "Fragile and Conflic Status" and *life expectancy*, but I could not find a WDI variable to flag the individual FCS countries, I merge my dataset with the table **_"FCS.csv" _** I found on line.
+```{r merge FCS ,  results='hide', warning=FALSE,  message = FALSE}
+# add FCS,csv in a way that is reproducible
+# FCS <- read.csv("FCS.csv", header = TRUE, sep = ",") 
+myfile <- "https://raw.githubusercontent.com/Lulliter/DECDD/master/FCS.csv"
+FCS <- read_csv(myfile)
+
+# Merge
+lifemergedFCS <- left_join(lifemerged, FCS, by =c("iso3c.x" = "CountryCode")) 
+head(lifemergedFCS)
+
+# remove region == Aggreagates -> from 15,048 obs to 12,027 obs 
+lifeCountry <- filter(lifemergedFCS, region!= "Aggregates") %>% select(year, "iso2c", country="country.x", "region", incomeLev="income", fragile="GroupCode", lifeexpeALL="SP.DYN.LE00.IN", lifeexpeMA="SP.DYN.LE00.MA.IN",   lifeexpeFE="SP.DYN.LE00.FE.IN",  starts_with("GdpP"))
+  
+summary(lifeCountry)
+n_distinct(lifeCountry$iso2c)    # 304 obs = countries (211) + "aggreagates"
+n_distinct(lifeCountry$country)  #  countries (211) + "aggreagates"
+n_distinct(lifeCountry$region)   #  7 + "aggreagates"
+n_distinct(lifeCountry$incomeLev) #  6 + "aggreagates"
+
+
+
+
+```
+
+
+
+#	Descriptive Statistics considerations
+###  Dealing with missing observations for life expectancy indicators  
+After checking across the key dimensions of my dataset, I observe that missing values have a very high incidence among small countries/islands. Since this seems to be a coverage error in the sample that should not affect the outcome of interest, I decide it is OK to exclude them for the purpose of this analysis. I obtain 10,743 instead of 12,027 observations
+```{r missing values ,  results='hide', warning=FALSE,  message = FALSE}
+# Count NA obs
+sum(is.na(lifeCountry$lifeexpeALL)) # 1284 
+sum(is.na(lifeCountry$lifeexpeMA)) # 1284 
+sum(is.na(lifeCountry$lifeexpeFE)) # 1284 
+sum(is.na(lifeCountry$GdpPerCapCurrent)) # 2965
+sum(is.na(lifeCountry$GdpPerCap2010)) # 3399
+
+# Explore if NA distribution is sistematically related to any key dimensions
+table (lifeCountry$country , is.na(lifeCountry$lifeexpeALL))  # looks like small countries are the ones missing
+table (lifeCountry$region , is.na(lifeCountry$lifeexpeALL)) # not too much difference across regions 
+table (lifeCountry$fragile , is.na(lifeCountry$lifeexpeALL)) # similar incidence as other groups 
+table (lifeCountry$year , is.na(lifeCountry$lifeexpeALL))  # year 2015 is the last available 
+table (lifeCountry$incomeLev , is.na(lifeCountry$lifeexpeALL)) # notable high incidenc eof missing in "High income: nonOECD""
+
+# Drop missing "lifeexpALL" 
+lifeCountry2 <- lifeCountry[!is.na(lifeCountry$lifeexpeALL),]
+
+# I recode FCS as dummy variable because NA is actually "0" there
+lifeCountry2 <- mutate(lifeCountry2, fragile =  ifelse(is.na(lifeCountry2$fragile), 0, 1))
+```
+
+###  Checking correlation between life expectancy and GDP and variation across groups of different income levels.
+
++ Correlation (measured as Pearson's) between life expectancy and GDP is very high as suspected (0.78 for GDP constant 2010)
++ I also use ANOVA (analisys of variance) to validate whether the mean outcomes differ across groups.The highly significance F test statistics suggests extremely high variation across income levels. 
+
+```{r GDP and income,   warning=FALSE,  message = FALSE}
+# 1st transform GDP indicators taking the natural-log for easier change interpretation
+lifeCountry2$logGDPcurr <- log(lifeCountry2$GdpPerCapCurrent)
+lifeCountry2$logGDPconst <- log(lifeCountry2$GdpPerCap2010)
+
+# 2nd I look at Pearson's correlation
+cor(lifeCountry2$lifeexpeALL, lifeCountry2$logGDPconst, use="complete.obs") # 0.7815843
+cor(lifeCountry2$lifeexpeALL, lifeCountry2$logGDPcurr, use="complete.obs") # 0.836471
+
+# 2-way ANOVA with factorial A (year) and B (income)
+fit2 <- aov(lifeexpeALL ~ as.factor(year) + as.factor(incomeLev) , data=lifeCountry2)
+summary(fit2) # display Type I sequential SS (effect as the factor were considered one at a time into the model, in the order they are entered in the model )
+drop1(fit2,~.,test="F") # type III marginal SS and F Tests (effect of each variable is evaluated after all other factors have been accounted for)
+```
+
+
+#	Further information through data visualization
+
+### Plot of correlation between life expectancy and GDP
+The graph corroborates the high correlation found
+```{r g1, echo=FALSE}
+g1 <- ggplot (lifeCountry2, aes(x=logGDPconst, y = lifeexpeALL, color=lifeexpeALL)) + geom_point() +   scale_color_gradient(low= "red",high = "green") + labs(title="Correlation of Life Expectancy (All) with log of GDP (constant 2010 value)", x="log of GDP", y="years") 
+
+g1
+```
+
+
+### Comparing means of life expectancy across Income levels in key years
+Looking only at 1960 and 2015, I also find striking visual evidence that being a FCS country has consistently lowered life expectancy across almost evey group.
+```{r , echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+# plotting vs incomeLev & fragile 
+lifeCountry2$incomeLev = str_wrap(lifeCountry2$incomeLev, width = 10)
+
+# reorder income lev
+lifeCountry2$incomeLev2 <- factor(lifeCountry2$incomeLev, levels = c("Not\nclassified","Low income","Lower\nmiddle\nincome","Upper\nmiddle\nincome","High\nincome:\nnonOECD","High\nincome:\nOECD"))
+
+
+le1960 <- lifeCountry2 %>% filter(year==1960) 
+g2 <-ggplot( le1960, aes(incomeLev2, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by incomeLev2", 
+         subtitle="1960",
+         x="incomeLev2",
+         y="years")
+          # + coord_flip()
+
+le2015 <- lifeCountry2 %>% filter(year==2015) 
+g3 <- ggplot( le2015, aes(incomeLev2, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by incomeLev2", 
+         subtitle="2015",
+        
+         x="incomeLev2",
+         y="years")  
+  # + coord_flip()
+
+grid.arrange(g2, g3, nrow=2)
+```
+
+
+### Comparing means of life expectancy across Regions in key years
+I find again striking visual evidence that being a FCS country lower the life expectancy variable. Even more remarkable when looking at the change in MENA between 1960 and 2015... the divergence between FCS and Not-FCS has increased visibly. South Asia shows the most remarkable improvement of average life expectancy over time.
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE,  fig.width=8, fig.height=8}
+# plotting vs region & fragile 
+lifeCountry2$region = str_wrap(lifeCountry2$region, width = 15)
+
+le1960 <- lifeCountry2 %>% filter(year==1960) 
+
+g3 <-ggplot( le1960, aes(region, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by region", 
+         subtitle="1960",
+        
+         x="region",
+         y="years")
+          # + coord_flip()
+
+le2015 <- lifeCountry2 %>% filter(year==2015) 
+
+
+g4 <- ggplot( le2015, aes(region, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by region", 
+         subtitle="2015",
+        
+         x="region",
+         y="years")  
+  # + coord_flip()
+
+grid.arrange(g3, g4, nrow=2)
+
+
+  #tapply(le1960$lifeexpeFE, le1960$incomeLev, mean)
+ #tapply(le2015$lifeexpeFE, le2015$incomeLev, mean)
+ #tapply(le2015$lifeexpeMA, le2015$incomeLev, mean)
+```
+
+### Patterns of change of life expectancy over time - across Income Level
+Upon observing a clear difference in terms of life expectancy distribution across income levels observed in 2 extreme years, I will check the change over time.
+Interestingly, in high income countries the lif expectancy of women is consistently above the one of men through the decades. 
+
+```{r , echo=FALSE, fig.width=8, fig.height=8}
+# group by income lev
+lifeCountry3 <- lifeCountry2 %>% group_by(year, incomeLev2) %>% summarise(meanLEall=mean(lifeexpeALL), meanLEmale=mean(lifeexpeMA), meanLEfem=mean(lifeexpeFE)) 
+
+
+g5 <- ggplot(lifeCountry3, aes(x=year) ) + 
+        geom_line(aes(y=meanLEfem,color="Female Life Expectancy")) +
+        scale_colour_discrete(name ="Groups")+
+        facet_wrap(~ incomeLev2)+
+         geom_line(aes(y=meanLEmale,color="Male Life Expectancy"))+
+         geom_line(aes(y=meanLEall,color="Total Life Expectancy")) +
+        labs(x="Year",y="life expectancy") +
+        ggtitle("Life Expectancy changes across income levels between 1960 and 2015")
+
+g5 
+```
+
+
+
+### Patterns of change of life expectancy over time - across Region
+Upon demonstrating the significant difference of life expectancy's means & trend patterns across Income Level, I want to compare growth patterns across regions 
+In terms of historical trends and change patterns, it seems like the region "categorical variable" picks up a much more impressive divergence
+```{r ,fig.width=8, fig.height=8}
+# have to group by region
+lifeCountry4 <- lifeCountry2 %>% group_by(year, region) %>% summarise(meanLEall=mean(lifeexpeALL), meanLEmale=mean(lifeexpeMA), meanLEfem=mean(lifeexpeFE)) 
+
+g6 <- ggplot(lifeCountry4, aes(x=year) ) + 
+        geom_line(aes(y=meanLEfem,color="Female Life Expectancy")) +
+        scale_colour_discrete(name ="Groups")+
+        facet_wrap(~ region)+
+         geom_line(aes(y=meanLEmale,color="Male Life Expectancy"))+
+         geom_line(aes(y=meanLEall,color="Total Life Expectancy")) +
+        labs(x="Year",y="life expectancy in years") +
+        ggtitle("Life Expectancy changes across regions between 1960 and 2015")
+
+g6 
+```
