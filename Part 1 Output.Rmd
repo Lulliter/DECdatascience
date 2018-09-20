@@ -1,0 +1,272 @@
+---
+title: "Part 1 Output - 2/21/2018"
+author: "Luisa M Mimmi"
+fontsize: 11pt
+geometry: margin=1.5cm
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+**Life expectancy at birth** is calculated as _**the number of years a newborn infant would live** if prevailing patterns of mortality at the time of its birth were to stay the same throughout its life._ (compiled from UN, Eurostat and other national sources).
+This statistic synthetically captures the overall health status of a population, its exposure to diseases and other forms of vulnerability that can affect living standards. This analysis explored the global, historical trends of this indicator *[1960 - 2015]*, demonstrated its close correlation to **income**, and highlighed its responsiveness to the status of countries as **fragile and conflict affected situations**.
+
+#### Key findings
+* From 1960 to 2015, life expectancy has grown across countries and income levels
+  + In 1960 it ranged from a minimum of 28 years (in Mali) to a maximum of 73 years (in Norway). In 2015 from a much higher minimum of 51 years (in Central African Republic) to the highest bound of 84 (in Hong Kong)
+  + South Asia registered the biggest improvement, since life expectancy grew on average from 41 (1960) to 70 years (2015)
+  + Women's life expectancy is consistently higher over time and across regions; more significantly so in high income countries (where women live some 5 yrs more than men on average).
+* Life expectancy shows a high, positive correlation with **GDP per capita** (also validated by statistical tests). It is interesting to see that countries that have been in a high income bracket longer (e.g. OECD ones) registered a slower growth rate in life expectancy. 
+  + A possible explanation is that achieving the living standards of the most productive economies can make a big difference for the population's life prospects, at least to jump closer to the limits imposed by nature and scientific progress.   
+* Another interesting insight is that living in countries classified as "**Fragile and conflict affected**" (FCS) has a stricking negative effects on life expectancy. This was consistently seen comparing FCS countries with both their regional and income level peers (see figure in Annex). 
+  + This finding corroborates the emphasis that the WBG puts on supporting these countries because such vulnerable status has a tremendous cost in terms of human lives. 
+  
+  
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(tidy = TRUE, echo = FALSE , results='hide',  message = FALSE, warning = FALSE , fig.show='hide', fig.align='center', fig.width=7, fig.height=7)
+```
+
+```{r packages }
+library(WDI)
+library(wbstats)
+library(ggplot2) 
+library(dplyr)
+library(stats)
+library(tidyr)
+library(stringr)
+library(gridExtra)
+library(readr)  # for read_csv
+library(knitr)  # for kable
+```
+
+
+```{r search}
+WDIsearch("life expectancy at birth.*total")
+WDIsearch("life expectancy at birth.*male")
+wbsearch("gdp.*capita.*US\\$") 
+```
+
+
+```{r data}
+# WDI life expectancy indicators 
+WDIlifeexp <- WDI(country = "all", indicator = c("SP.DYN.LE00.IN","SP.DYN.LE00.MA.IN","SP.DYN.LE00.FE.IN", "SI.SPR.PCAP"), start=1960, end=2016, extra= TRUE)
+names(WDIlifeexp)
+
+# wb GDP  per capita (wb does not have arg extra)
+wbGDP <- wb(country = "all", indicator = c("NY.GDP.PCAP.KD","NY.GDP.PCAP.CD"))
+names(wbGDP)
+```
+
+```{r merge GDP}
+# tidy GDP spread 
+wbGDP$date = as.numeric(wbGDP$date)
+wbGDP_spread <- select (wbGDP, -indicator ) %>% spread(indicatorID, value, fill = NA, convert = TRUE, drop = TRUE,  sep = NULL) 
+
+# rename GDP
+names(wbGDP_spread)[5]<-"GdpPerCapCurrent"
+names(wbGDP_spread)[6]<-"GdpPerCap2010"
+
+# merge life and GDP (spread)
+lifemerged <-  left_join(WDIlifeexp, wbGDP_spread, by=c("year"= "date", "iso2c"="iso2c")) # 15,048
+```
+
+
+```{r merge FCS}
+# add FCS,csv in a way that is reproducible
+# FCS <- read.csv("FCS.csv", header = TRUE, sep = ",") 
+myfile <- "https://raw.githubusercontent.com/Lulliter/DECDD/master/FCS.csv"
+FCS <- read_csv(myfile)
+
+# Merge
+lifemergedFCS <- left_join(lifemerged, FCS, by =c("iso3c.x" = "CountryCode")) 
+head(lifemergedFCS)
+
+# remove region == Aggreagates -> from 15,048 obs to 12,027 obs 
+lifeCountry <- filter(lifemergedFCS, region!= "Aggregates") %>% select(year, "iso2c", country="country.x", "region", incomeLev="income", fragile="GroupCode", lifeexpeALL="SP.DYN.LE00.IN", lifeexpeMA="SP.DYN.LE00.MA.IN",   lifeexpeFE="SP.DYN.LE00.FE.IN",  starts_with("GdpP"))
+```
+
+
+```{r missing values }
+
+# Drop missing "lifeexpALL" 
+lifeCountry2 <- lifeCountry[!is.na(lifeCountry$lifeexpeALL),]
+
+# I recode FCS as dummy variable because NA is actually "0" there
+lifeCountry2 <- mutate(lifeCountry2, fragile =  ifelse(is.na(lifeCountry2$fragile), 0, 1))
+```
+
+
+
+```{r GDP and income}
+# 1st transform GDP indicators taking the natural-log for easier change interpretation
+lifeCountry2$logGDPcurr <- log(lifeCountry2$GdpPerCapCurrent)
+lifeCountry2$logGDPconst <- log(lifeCountry2$GdpPerCap2010)
+
+# 2nd I look at Pearson's correlation
+cor(lifeCountry2$lifeexpeALL, lifeCountry2$logGDPconst, use="complete.obs") # 0.7815843
+cor(lifeCountry2$lifeexpeALL, lifeCountry2$logGDPcurr, use="complete.obs") # 0.836471
+
+# 2-way ANOVA with factorial A (year) and B (income)
+fit2 <- aov(lifeexpeALL ~ as.factor(year) + as.factor(incomeLev) , data=lifeCountry2)
+summary(fit2) # display Type I sequential SS (effect as the factor were considered one at a time into the model, in the order they are entered in the model )
+drop1(fit2,~.,test="F") # type III marginal SS and F Tests (effect of each variable is evaluated after all other factors have been accounted for)
+```
+
+
+```{r g1 }
+# corr plot
+
+g1 <- ggplot (lifeCountry2, aes(x=logGDPconst, y = lifeexpeALL, color=lifeexpeALL)) + geom_point() +   scale_color_gradient(low= "red",high = "green") + labs(title="Correlation of Life Expectancy (All) with log of GDP (constant 2010 value)", x="log of GDP", y="years") 
+
+g1
+```
+
+
+```{r }
+# plotting vs incomeLev & fragile 
+lifeCountry2$incomeLev = str_wrap(lifeCountry2$incomeLev, width = 10)
+
+# reorder income lev
+lifeCountry2$incomeLev2 <- factor(lifeCountry2$incomeLev, levels = c("Not\nclassified","Low income","Lower\nmiddle\nincome","Upper\nmiddle\nincome","High\nincome:\nnonOECD","High\nincome:\nOECD"))
+
+
+le1960 <- lifeCountry2 %>% filter(year==1960) 
+g2 <-ggplot( le1960, aes(incomeLev2, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by incomeLev2", 
+         subtitle="1960",
+         x="incomeLev2",
+         y="years")
+          # + coord_flip()
+
+le2015 <- lifeCountry2 %>% filter(year==2015) 
+g3 <- ggplot( le2015, aes(incomeLev2, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by incomeLev2", 
+         subtitle="2015",
+        
+         x="incomeLev2",
+         y="years")  
+  # + coord_flip()
+
+grid.arrange(g2, g3, nrow=2)
+```
+
+
+```{r g3 OK}
+# plotting vs region & fragile 
+lifeCountry2$region = str_wrap(lifeCountry2$region, width = 15)
+
+le1960 <- lifeCountry2 %>% filter(year==1960) 
+
+
+g3 <-ggplot( le1960, aes(region, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by region", 
+         subtitle="1960",
+        
+         x="region",
+         y="years")
+          # + coord_flip()
+
+le2015 <- lifeCountry2 %>% filter(year==2015) 
+
+g4 <- ggplot( le2015, aes(region, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by region", 
+         subtitle="2015",
+        
+         x="region",
+         y="years")  
+  # + coord_flip()
+
+grid.arrange(g3, g4, nrow=2)
+
+```
+
+
+```{r hist income OK , fig.show='asis'}
+# group by income lev
+lifeCountry3 <- lifeCountry2 %>% group_by(year, incomeLev2) %>% filter (incomeLev2!= "Not\nclassified") %>% summarise(meanLEall=mean(lifeexpeALL), meanLEmale=mean(lifeexpeMA), meanLEfem=mean(lifeexpeFE)) 
+
+
+g5 <- ggplot(lifeCountry3, aes(x=year) ) + 
+        geom_line(aes(y=meanLEfem,color="Female Life Expectancy")) +
+   # ylim(30, 85) +
+   scale_y_continuous(limits = c(25, 85)) +
+        scale_colour_discrete(name ="Groups")+
+  theme(legend.position="bottom", legend.box = "horizontal") + labs(subtitle="Groups") +
+        facet_wrap(~ incomeLev2)+
+         geom_line(aes(y=meanLEmale,color="Male Life Expectancy"))+
+         geom_line(aes(y=meanLEall,color="Total Life Expectancy")) +
+        labs(x="Year",y="life expectancy") +
+        ggtitle("Life Expectancy changes across income levels between 1960 and 2015")
+
+g5 
+```
+
+
+```{r hist region NO }
+# have to group by region
+lifeCountry4 <- lifeCountry2 %>% group_by(year, region) %>% summarise(meanLEall=mean(lifeexpeALL), meanLEmale=mean(lifeexpeMA), meanLEfem=mean(lifeexpeFE)) 
+
+g6 <- ggplot(lifeCountry4, aes(x=year) ) + 
+        geom_line(aes(y=meanLEfem,color="Female Life Expectancy")) +
+        scale_colour_discrete(name ="Groups")+
+        facet_wrap(~ region)+
+         geom_line(aes(y=meanLEmale,color="Male Life Expectancy"))+
+         geom_line(aes(y=meanLEall,color="Total Life Expectancy")) +
+        labs(x="Year",y="life expectancy in years") +
+        ggtitle("Life Expectancy changes across regions between 1960 and 2015")
+
+g6 
+```
+\pagebreak
+### ANNEX
+
+```{r g3 OK dup, fig.show='asis'}
+# plotting vs region & fragile 
+lifeCountry2$region = str_wrap(lifeCountry2$region, width = 15)
+
+le1960 <- lifeCountry2 %>% filter(year==1960) 
+
+
+g3 <-ggplot( le1960, aes(region, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by region", 
+         subtitle="1960",
+        
+         x="region",
+         y="years")
+          # + coord_flip()
+
+le2015 <- lifeCountry2 %>% filter(year==2015) 
+
+g4 <- ggplot( le2015, aes(region, lifeexpeALL)) + geom_boxplot((aes(fill=factor(fragile)))) + 
+   scale_fill_manual(values=c("#00BA38", "#F8766D" )) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.7)) + 
+ # scale_x_discrete(labels = abbreviate) +
+    labs(title="Life Expectancy (All) by region", 
+         subtitle="2015",
+        
+         x="region",
+         y="years")  
+  # + coord_flip()
+
+grid.arrange(g3, g4, nrow=2)
+
+```
+
+## Notes
++ In order to flag the individual countries that are classified as FCS, I used the World Bank list of economies (as of June 2017) found [here](http://databank.worldbank.org/data/download/site-content/CLASS.xls)
